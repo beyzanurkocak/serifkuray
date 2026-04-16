@@ -1,0 +1,8 @@
+{
+  "email": "admin@serifkuray.com",
+  "passwordSalt": "ec688949326f218e45f8f7b41d3b04c9",
+  "passwordHash": "bd0b10cc7a0db9cc9566d44e4e44d68d454f0862a7de9c3f3a8c4151c6cf57a7c619d3e87f499283d97a7f54227c6565bd0b4affb9aab98509926e6f5c7a4bec",
+  "resetTokenHash": "92e70ddead7dd56ede9370b3a182699847e35860df3db1cb8f8145ad8c16fbc1",
+  "resetExpiresAt": "2026-04-16T11:41:03.329Z",
+  "updatedAt": "2026-04-16T11:11:03.329Z"
+}

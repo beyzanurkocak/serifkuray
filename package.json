@@ -1,0 +1,12 @@
+{
+  "name": "serifkuray",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serif Kuray randevu ve admin panel uygulamasi",
+  "scripts": {
+    "start": "node ./server.js"
+  },
+  "dependencies": {
+    "nodemailer": "^6.10.1"
+  }
+}
