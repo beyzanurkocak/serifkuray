@@ -10,6 +10,7 @@ import path from 'path';
 
 const app = express();
 
+app.use(express.static('.'));
 // BU ŞART
 app.use(express.static(path.join(process.cwd())));
 
