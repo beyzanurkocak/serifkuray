@@ -40,6 +40,7 @@ loadDotEnvFile();
 
 // ── Sabitler ─────────────────────────────────────────────────────────────────
 const PORT                  = Number(process.env.PORT || 3001);
+const PORT = process.env.PORT || 3000;
 const SESSION_TTL_MS        = 1000 * 60 * 60 * 12;
 const RESET_TOKEN_TTL_MS    = 1000 * 60 * 30;
 const DEFAULT_ADMIN_EMAIL   = (process.env.ADMIN_EMAIL || 'admin@serifkuray.com').trim().toLowerCase();
