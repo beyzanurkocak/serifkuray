@@ -618,7 +618,7 @@ function openSSE(req, res) {
 function safeFilePathFromUrl(urlPathname) {
   const decoded = decodeURIComponent(urlPathname);
   const normalized = path.normalize(decoded).replace(/^(\.\.[/\\])+/, '');
-  const fullPath = path.join(ROOT_DIR, normalized);
+const fullPath = path.join(ROOT_DIR, normalized.replace(/^\/+/, ''));
   if (!fullPath.startsWith(ROOT_DIR)) return null;
   return fullPath;
 }
