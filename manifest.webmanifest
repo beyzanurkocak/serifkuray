@@ -1,0 +1,25 @@
+{
+  "name": "Serif Kuray Admin",
+  "short_name": "SerifKuray",
+  "description": "Serif Kuray randevu ve admin paneli",
+  "id": "/admin",
+  "start_url": "/admin",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/serifkuraylogoc.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/serifkuraylogo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

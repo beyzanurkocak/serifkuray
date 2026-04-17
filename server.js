@@ -1,8 +1,10 @@
 ﻿const http = require('http');
 const fs = require('fs');
+const https = require('https');
 const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
+const webpush = require('web-push');
 
 function loadDotEnvFile() {
   const envPath = path.join(__dirname, '.env');
@@ -36,10 +38,22 @@ const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
 const DEFAULT_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'admin@serifkuray.com').trim().toLowerCase();
 const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'serif2026';
 const APP_BASE_URL = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED || 'false').trim().toLowerCase() === 'true';
+const WHATSAPP_ACCESS_TOKEN = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+const WHATSAPP_PHONE_NUMBER_ID = String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+const WHATSAPP_NOTIFY_TO = String(process.env.WHATSAPP_NOTIFY_TO || '').trim();
+const WHATSAPP_TEMPLATE_NAME = String(process.env.WHATSAPP_TEMPLATE_NAME || 'randevu_bildirimi').trim();
+const WHATSAPP_TEMPLATE_LANG = String(process.env.WHATSAPP_TEMPLATE_LANG || 'tr').trim();
+const WHATSAPP_API_VERSION = String(process.env.WHATSAPP_API_VERSION || 'v18.0').trim();
+const WEB_PUSH_ENABLED = String(process.env.WEB_PUSH_ENABLED || 'false').trim().toLowerCase() === 'true';
+const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || 'mailto:admin@serifkuray.com').trim();
+const WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || '').trim();
+const WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || '').trim();
 const ROOT_DIR = __dirname;
 const DATA_DIR = path.join(ROOT_DIR, 'data');
 const APPOINTMENTS_FILE = path.join(DATA_DIR, 'appointments.json');
 const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+const PUSH_SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'push-subscriptions.json');
 const MASTER_NAMES = ['Şerif Kuray', 'Murat Bulut', 'Ömer Cafoğlu'];
 
 const sessions = new Map();
@@ -50,6 +64,7 @@ const mimeTypes = {
   '.js': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -164,6 +179,9 @@ async function ensureDataFiles() {
   if (!fs.existsSync(APPOINTMENTS_FILE)) {
     await fsp.writeFile(APPOINTMENTS_FILE, '[]', 'utf8');
   }
+  if (!fs.existsSync(PUSH_SUBSCRIPTIONS_FILE)) {
+    await fsp.writeFile(PUSH_SUBSCRIPTIONS_FILE, '[]', 'utf8');
+  }
   if (!fs.existsSync(ADMIN_FILE)) {
     const salt = crypto.randomBytes(16).toString('hex');
     const admin = {
@@ -192,6 +210,22 @@ async function readAppointments() {
 async function writeAppointments(items) {
   await ensureDataFiles();
   await fsp.writeFile(APPOINTMENTS_FILE, JSON.stringify(items, null, 2), 'utf8');
+}
+
+async function readPushSubscriptions() {
+  await ensureDataFiles();
+  const raw = await fsp.readFile(PUSH_SUBSCRIPTIONS_FILE, 'utf8');
+  try {
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+async function writePushSubscriptions(items) {
+  await ensureDataFiles();
+  await fsp.writeFile(PUSH_SUBSCRIPTIONS_FILE, JSON.stringify(items, null, 2), 'utf8');
 }
 
 async function readAdmin() {
@@ -264,6 +298,214 @@ async function sendResetMail(toEmail, resetLink) {
 
 function cleanString(value) {
   return String(value || '').trim();
+}
+
+function normalizePhoneNumber(value) {
+  const digits = cleanString(value).replace(/[^\d]/g, '');
+  if (!digits) return '';
+  return digits.startsWith('00') ? digits.slice(2) : digits;
+}
+
+function formatAppointmentDateTR(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const [year, month, day] = value.split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function getWebPushConfig() {
+  if (!WEB_PUSH_ENABLED) return null;
+  if (!WEB_PUSH_PUBLIC_KEY || !WEB_PUSH_PRIVATE_KEY || !WEB_PUSH_SUBJECT) return null;
+  return {
+    publicKey: WEB_PUSH_PUBLIC_KEY,
+    privateKey: WEB_PUSH_PRIVATE_KEY,
+    subject: WEB_PUSH_SUBJECT
+  };
+}
+
+function normalizePushSubscription(input) {
+  const endpoint = cleanString(input?.endpoint);
+  const keys = input?.keys || {};
+  const p256dh = cleanString(keys.p256dh);
+  const auth = cleanString(keys.auth);
+  if (!endpoint || !p256dh || !auth) return null;
+  return {
+    endpoint,
+    expirationTime: input?.expirationTime ?? null,
+    keys: { p256dh, auth }
+  };
+}
+
+async function savePushSubscription(subscription) {
+  const normalized = normalizePushSubscription(subscription);
+  if (!normalized) throw new Error('Gecersiz bildirim aboneligi.');
+  const list = await readPushSubscriptions();
+  const existingIndex = list.findIndex(item => item.endpoint === normalized.endpoint);
+  if (existingIndex >= 0) {
+    list[existingIndex] = normalized;
+  } else {
+    list.push(normalized);
+  }
+  await writePushSubscriptions(list);
+  return normalized;
+}
+
+async function removePushSubscriptionByEndpoint(endpoint) {
+  const cleanEndpoint = cleanString(endpoint);
+  if (!cleanEndpoint) return false;
+  const list = await readPushSubscriptions();
+  const next = list.filter(item => item.endpoint !== cleanEndpoint);
+  if (next.length === list.length) return false;
+  await writePushSubscriptions(next);
+  return true;
+}
+
+function createAppointmentPushPayload(appointment) {
+  return JSON.stringify({
+    title: 'Yeni Randevu Talebi',
+    body: `${appointment.name} - ${appointment.service} - ${formatAppointmentDateTR(appointment.date)} ${appointment.time}`,
+    tag: `appointment-${appointment.id}`,
+    url: '/admin',
+    appointment: {
+      id: appointment.id,
+      name: appointment.name,
+      service: appointment.service,
+      date: appointment.date,
+      time: appointment.time,
+      master: appointment.master,
+      phone: appointment.phone
+    }
+  });
+}
+
+async function sendAppointmentPushNotifications(appointment) {
+  const cfg = getWebPushConfig();
+  if (!cfg) return { skipped: true };
+
+  webpush.setVapidDetails(cfg.subject, cfg.publicKey, cfg.privateKey);
+
+  const subscriptions = await readPushSubscriptions();
+  if (!subscriptions.length) return { sent: 0, removed: 0 };
+
+  const staleEndpoints = new Set();
+  let sent = 0;
+  const payload = createAppointmentPushPayload(appointment);
+
+  await Promise.all(subscriptions.map(async subscription => {
+    try {
+      await webpush.sendNotification(subscription, payload);
+      sent += 1;
+    } catch (err) {
+      const statusCode = err?.statusCode || err?.status || 0;
+      if (statusCode === 404 || statusCode === 410) {
+        staleEndpoints.add(subscription.endpoint);
+        return;
+      }
+      throw err;
+    }
+  }));
+
+  if (staleEndpoints.size) {
+    const activeSubscriptions = subscriptions.filter(item => !staleEndpoints.has(item.endpoint));
+    await writePushSubscriptions(activeSubscriptions);
+  }
+
+  return { sent, removed: staleEndpoints.size };
+}
+
+function getWhatsAppConfig() {
+  if (!WHATSAPP_ENABLED) return null;
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID || !WHATSAPP_NOTIFY_TO || !WHATSAPP_TEMPLATE_NAME || !WHATSAPP_TEMPLATE_LANG || !WHATSAPP_API_VERSION) {
+    return null;
+  }
+  return {
+    accessToken: WHATSAPP_ACCESS_TOKEN,
+    phoneNumberId: WHATSAPP_PHONE_NUMBER_ID,
+    notifyTo: normalizePhoneNumber(WHATSAPP_NOTIFY_TO),
+    templateName: WHATSAPP_TEMPLATE_NAME,
+    templateLang: WHATSAPP_TEMPLATE_LANG,
+    apiVersion: WHATSAPP_API_VERSION
+  };
+}
+
+function postJson(urlString, payload, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const requestUrl = new URL(urlString);
+    const body = JSON.stringify(payload);
+    const req = https.request({
+      protocol: requestUrl.protocol,
+      hostname: requestUrl.hostname,
+      port: requestUrl.port || undefined,
+      path: `${requestUrl.pathname}${requestUrl.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+        ...headers
+      }
+    }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let parsed = raw;
+        if (raw) {
+          try {
+            parsed = JSON.parse(raw);
+          } catch (_err) {}
+        }
+        if ((res.statusCode || 500) >= 200 && (res.statusCode || 500) < 300) {
+          resolve(parsed);
+          return;
+        }
+        const detail = typeof parsed === 'string'
+          ? parsed
+          : (parsed && parsed.error && parsed.error.message) || 'Bilinmeyen hata';
+        reject(new Error(`HTTP ${res.statusCode || 500}: ${detail}`));
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function buildAppointmentTemplateParameters(appointment) {
+  return [
+    { type: 'text', text: appointment.name },
+    { type: 'text', text: appointment.service },
+    { type: 'text', text: formatAppointmentDateTR(appointment.date) },
+    { type: 'text', text: appointment.time },
+    { type: 'text', text: appointment.master },
+    { type: 'text', text: appointment.phone }
+  ];
+}
+
+async function sendAppointmentWhatsAppNotification(appointment) {
+  const cfg = getWhatsAppConfig();
+  if (!cfg || !cfg.notifyTo) return { skipped: true };
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: cfg.notifyTo,
+    type: 'template',
+    template: {
+      name: cfg.templateName,
+      language: { code: cfg.templateLang },
+      components: [
+        {
+          type: 'body',
+          parameters: buildAppointmentTemplateParameters(appointment)
+        }
+      ]
+    }
+  };
+
+  return postJson(
+    `https://graph.facebook.com/${cfg.apiVersion}/${cfg.phoneNumberId}/messages`,
+    payload,
+    { Authorization: `Bearer ${cfg.accessToken}` }
+  );
 }
 
 function normalizeMasterName(master) {
@@ -445,6 +687,55 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (cleanPath === '/api/admin/push/config' && method === 'GET') {
+    if (!requireAdmin(req, res)) return;
+    const cfg = getWebPushConfig();
+    sendJson(res, 200, {
+      enabled: !!cfg,
+      publicKey: cfg?.publicKey || '',
+      subject: cfg?.subject || ''
+    });
+    return;
+  }
+
+  if (cleanPath === '/api/admin/push/subscribe' && method === 'POST') {
+    if (!requireAdmin(req, res)) return;
+    if (!getWebPushConfig()) {
+      sendJson(res, 503, { error: 'Web push ayarlari eksik.' });
+      return;
+    }
+    let body;
+    try {
+      body = await readBodyJSON(req);
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+      return;
+    }
+    try {
+      const saved = await savePushSubscription(body.subscription);
+      sendJson(res, 200, { ok: true, endpoint: saved.endpoint });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
+    return;
+  }
+
+  if (cleanPath === '/api/admin/push/unsubscribe' && method === 'POST') {
+    if (!requireAdmin(req, res)) return;
+    let body;
+    try {
+      body = await readBodyJSON(req);
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+      return;
+    }
+    const subscription = normalizePushSubscription(body.subscription || {});
+    const endpoint = subscription?.endpoint || cleanString(body.endpoint);
+    const removed = await removePushSubscriptionByEndpoint(endpoint);
+    sendJson(res, 200, { ok: true, removed });
+    return;
+  }
+
   if (cleanPath === '/api/admin/forgot-password' && method === 'POST') {
     let body;
     try {
@@ -579,6 +870,16 @@ async function handleApi(req, res, pathname) {
     }
     list.push(appointment);
     await writeAppointments(list);
+    try {
+      await sendAppointmentWhatsAppNotification(appointment);
+    } catch (err) {
+      console.error('[whatsapp] Randevu bildirimi gonderilemedi:', err.message);
+    }
+    try {
+      await sendAppointmentPushNotifications(appointment);
+    } catch (err) {
+      console.error('[push] Randevu bildirimi gonderilemedi:', err.message);
+    }
     broadcastEvent('appointment_created', {
       id: appointment.id,
       name: appointment.name,
