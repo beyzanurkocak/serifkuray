@@ -5,6 +5,13 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const webpush = require('web-push');
+import express from 'express';
+import path from 'path';
+
+const app = express();
+
+// BU ŞART
+app.use(express.static(path.join(process.cwd())));
 
 function loadDotEnvFile() {
   const envPath = path.join(__dirname, '.env');
