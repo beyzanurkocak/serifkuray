@@ -12,9 +12,6 @@ const crypto = require('crypto');
 let webpush = null;
 try { webpush = require('web-push'); } catch (_) {}
 
-// nodemailer opsiyonel
-let nodemailer = null;
-try { nodemailer = require('nodemailer'); } catch (_) {}
 
 // ── .env yükle (Railway'de zaten env var olarak gelir, lokal için) ──────────
 function loadDotEnvFile() {
@@ -39,13 +36,16 @@ function loadDotEnvFile() {
 loadDotEnvFile();
 
 // ── Sabitler ─────────────────────────────────────────────────────────────────
-const PORT                  = Number(process.env.PORT || 3001);
 const PORT = process.env.PORT || 3000;
 const SESSION_TTL_MS        = 1000 * 60 * 60 * 12;
 const RESET_TOKEN_TTL_MS    = 1000 * 60 * 30;
 const DEFAULT_ADMIN_EMAIL   = (process.env.ADMIN_EMAIL || 'admin@serifkuray.com').trim().toLowerCase();
 const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'serif2026';
 const APP_BASE_URL          = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+
+// ── WhatsApp wa.me linki için admin numarası ──────────────────────────────────
+// .env'e ADMIN_WHATSAPP_NUMBER=905001234567 şeklinde ekleyin (başında + olmadan)
+const ADMIN_WHATSAPP_NUMBER = cleanStringStatic(process.env.ADMIN_WHATSAPP_NUMBER || '');
 
 const WHATSAPP_ENABLED        = String(process.env.WHATSAPP_ENABLED || 'false').trim().toLowerCase() === 'true';
 const WHATSAPP_ACCESS_TOKEN   = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
@@ -84,6 +84,11 @@ const mimeTypes = {
   '.svg':         'image/svg+xml',
   '.ico':         'image/x-icon'
 };
+
+// ── Yardımcı (const-safe versiyonu, yukarıda çağrılabilen) ──────────────────
+function cleanStringStatic(value) {
+  return String(value || '').trim();
+}
 
 // ── Yardımcı ─────────────────────────────────────────────────────────────────
 function sendJson(res, statusCode, payload) {
@@ -266,37 +271,6 @@ async function writeAdmin(admin) {
   await fsp.writeFile(ADMIN_FILE, JSON.stringify(normalized, null, 2), 'utf8');
 }
 
-// ── Mail ──────────────────────────────────────────────────────────────────────
-function getMailConfig() {
-  const host = cleanString(process.env.SMTP_HOST);
-  const port = Number(process.env.SMTP_PORT || 0);
-  const user = cleanString(process.env.SMTP_USER);
-  const pass = cleanString(process.env.SMTP_PASS);
-  const from = cleanString(process.env.SMTP_FROM || user);
-  if (!host || !port || !user || !pass || !from) return null;
-  return {
-    host, port,
-    secure: cleanString(process.env.SMTP_SECURE).toLowerCase() === 'true' || port === 465,
-    auth: { user, pass },
-    from
-  };
-}
-
-async function sendResetMail(toEmail, resetLink) {
-  if (!nodemailer) throw new Error('nodemailer kurulu değil.');
-  const cfg = getMailConfig();
-  if (!cfg) throw new Error('SMTP ayarları eksik.');
-  const transporter = nodemailer.createTransport({
-    host: cfg.host, port: cfg.port, secure: cfg.secure, auth: cfg.auth
-  });
-  await transporter.sendMail({
-    from: cfg.from, to: toEmail,
-    subject: 'Serif Kuray Admin Şifre Sıfırlama',
-    text:  `Şifrenizi sıfırlamak için: ${resetLink}\nBağlantı 30 dakika geçerlidir.`,
-    html:  `<p><a href="${resetLink}">Şifremi sıfırla</a> (30 dakika geçerli)</p>`
-  });
-}
-
 // ── Telefon / tarih yardımcıları ──────────────────────────────────────────────
 function normalizePhoneNumber(value) {
   const digits = cleanString(value).replace(/[^\d]/g, '');
@@ -308,6 +282,30 @@ function formatAppointmentDateTR(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const [y, m, d] = value.split('-');
   return `${d}.${m}.${y}`;
+}
+
+// ── wa.me linki üretici ───────────────────────────────────────────────────────
+// Admin'in kendi WhatsApp numarasına, randevu bilgilerini içeren hazır mesajla link oluşturur.
+// .env → ADMIN_WHATSAPP_NUMBER=905001234567  (başında + ve boşluk olmadan)
+function buildWaLink(appointment) {
+  const phone = normalizePhoneNumber(ADMIN_WHATSAPP_NUMBER);
+  if (!phone) return null;   // numara tanımlı değilse link üretme
+
+  const dateTR = formatAppointmentDateTR(appointment.date);
+  const lines = [
+    '📋 *Yeni Randevu Talebi*',
+    '',
+    `👤 *Müşteri:* ${appointment.name}`,
+    `📞 *Telefon:* ${appointment.phone}`,
+    appointment.email ? `📧 *E-posta:* ${appointment.email}` : null,
+    `✂️ *Hizmet:* ${appointment.service}`,
+    `👨‍💼 *Usta:* ${appointment.master}`,
+    `📅 *Tarih:* ${dateTR}`,
+    `🕐 *Saat:* ${appointment.time}`,
+    appointment.note ? `📝 *Not:* ${appointment.note}` : null,
+  ].filter(l => l !== null).join('\n');
+
+  return `https://wa.me/${phone}?text=${encodeURIComponent(lines)}`;
 }
 
 // ── Web Push ──────────────────────────────────────────────────────────────────
@@ -373,7 +371,7 @@ async function sendAppointmentPushNotifications(appointment) {
   return { sent, removed: stale.size };
 }
 
-// ── WhatsApp ──────────────────────────────────────────────────────────────────
+// ── WhatsApp Business API (opsiyonel — mevcut haliyle korundu) ────────────────
 function getWhatsAppConfig() {
   if (!WHATSAPP_ENABLED || !WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID ||
       !WHATSAPP_NOTIFY_TO || !WHATSAPP_TEMPLATE_NAME || !WHATSAPP_TEMPLATE_LANG) return null;
@@ -640,55 +638,6 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
-  // POST /api/admin/forgot-password
-  if (cleanPath === '/api/admin/forgot-password' && method === 'POST') {
-    let body;
-    try { body = await readBodyJSON(req); } catch (err) { sendJson(res, 400, { error: err.message }); return; }
-    const email = normalizeEmail(body.email);
-    const admin = await readAdmin();
-    if (!email || email !== admin.email) {
-      sendJson(res, 200, { ok: true, message: 'Eğer e-posta kayıtlıysa sıfırlama bağlantısı gönderilir.' });
-      return;
-    }
-    const token     = crypto.randomBytes(32).toString('hex');
-    const resetLink = `${APP_BASE_URL}/admin?reset_token=${encodeURIComponent(token)}`;
-    try { await sendResetMail(admin.email, resetLink); }
-    catch (err) { sendJson(res, 500, { error: `Mail gönderilemedi: ${err.message}` }); return; }
-    admin.resetTokenHash  = hashText(token);
-    admin.resetExpiresAt  = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
-    admin.updatedAt       = new Date().toISOString();
-    await writeAdmin(admin);
-    sendJson(res, 200, { ok: true, message: 'Şifre sıfırlama bağlantısı e-postaya gönderildi.' });
-    return;
-  }
-
-  // POST /api/admin/reset-password
-  if (cleanPath === '/api/admin/reset-password' && method === 'POST') {
-    let body;
-    try { body = await readBodyJSON(req); } catch (err) { sendJson(res, 400, { error: err.message }); return; }
-    const token       = cleanString(body.token);
-    const newPassword = cleanString(body.newPassword);
-    if (!token || !newPassword) { sendJson(res, 400, { error: 'Token ve yeni şifre gerekli.' }); return; }
-    if (newPassword.length < 8) { sendJson(res, 400, { error: 'Yeni şifre en az 8 karakter olmalı.' }); return; }
-    const admin     = await readAdmin();
-    const expiresAt = admin.resetExpiresAt ? new Date(admin.resetExpiresAt).getTime() : 0;
-    if (!admin.resetTokenHash || !expiresAt || Number.isNaN(expiresAt) || expiresAt < Date.now()) {
-      sendJson(res, 400, { error: 'Sıfırlama bağlantısı geçersiz veya süresi dolmuş.' }); return;
-    }
-    if (hashText(token) !== admin.resetTokenHash) {
-      sendJson(res, 400, { error: 'Sıfırlama bağlantısı geçersiz.' }); return;
-    }
-    const salt          = crypto.randomBytes(16).toString('hex');
-    admin.passwordSalt  = salt;
-    admin.passwordHash  = createPasswordHash(newPassword, salt);
-    admin.resetTokenHash = null;
-    admin.resetExpiresAt = null;
-    admin.updatedAt     = new Date().toISOString();
-    await writeAdmin(admin);
-    sendJson(res, 200, { ok: true, message: 'Şifre başarıyla güncellendi.' });
-    return;
-  }
-
   // GET /api/admin/events (SSE)
   if (cleanPath === '/api/admin/events' && method === 'GET') {
     if (!requireAdmin(req, res)) return;
@@ -726,7 +675,19 @@ async function handleApi(req, res, pathname) {
     try { body = await readBodyJSON(req); } catch (err) { sendJson(res, 400, { error: err.message }); return; }
     const check = validateAppointmentInput(body);
     if (!check.ok) { sendJson(res, 400, { error: check.message }); return; }
-    const appointment = { id: crypto.randomUUID(), ...check.item, status: 'pending', createdAt: new Date().toISOString(), updatedAt: null };
+
+    // wa.me linkini üret ve randevuya ekle
+    const waLink = buildWaLink(check.item);
+
+    const appointment = {
+      id: crypto.randomUUID(),
+      ...check.item,
+      status: 'pending',
+      waLink: waLink || null,   // ← YENİ: admin kartında gösterilecek
+      createdAt: new Date().toISOString(),
+      updatedAt: null
+    };
+
     const list = await readAppointments();
     if (hasSlotConflict(list, appointment.master, appointment.date, appointment.time)) {
       sendJson(res, 409, { error: 'Seçilen usta için bu tarih ve saat dolu.' }); return;
@@ -793,4 +754,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, async () => {
   await ensureDataFiles();
   console.log(`✓ Sunucu çalışıyor → http://localhost:${PORT}`);
+  if (ADMIN_WHATSAPP_NUMBER) {
+    console.log(`✓ WhatsApp wa.me linki aktif → +${ADMIN_WHATSAPP_NUMBER}`);
+  } else {
+    console.log(`ℹ  WhatsApp wa.me linki için .env'e ADMIN_WHATSAPP_NUMBER ekleyin (örn: 905001234567)`);
+  }
 });
